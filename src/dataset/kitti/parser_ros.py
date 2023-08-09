@@ -167,6 +167,7 @@ class SemanticKitti(Dataset):
     # get points and labels
     proj_range = torch.from_numpy(self.scan.proj_range).clone()
     proj_xyz = torch.from_numpy(self.scan.proj_xyz).clone()
+    print(f"proj_xyz: {proj_xyz}")
     proj_remission = torch.from_numpy(self.scan.proj_remission).clone()
 
 #   proj_normal = torch.from_numpy(scan.normal_image).clone()
@@ -195,6 +196,9 @@ class SemanticKitti(Dataset):
     img_means = self.scan.get_img_means()
     img_stds = self.scan.get_img_stds()
        
+    self.scan.reset_img_means()
+    self.scan.reset_img_means()
+
     #proj = (proj - self.sensor_img_means[:, None, None]) / self.sensor_img_stds[:, None, None]
     proj = (proj - img_means) / img_stds
     proj = proj * proj_mask.float()

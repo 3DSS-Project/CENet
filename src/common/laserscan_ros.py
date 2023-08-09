@@ -299,6 +299,11 @@ class LaserScan:
                                  [[ np.std(self.scan_z_list)]],
                                  [[ np.std(self.intensity_list)]]])
         return img_stds
+
+    def reset_img_stds(self):
+        img_stds = []
+
+        return img_stds
     
     def get_img_means(self):
         img_means = torch.tensor([[[ np.mean(self.depth_list)]],
@@ -306,6 +311,11 @@ class LaserScan:
                                   [[np.mean(self.scan_y_list)]],
                                   [[ np.mean(self.scan_z_list)]],
                                   [[ np.mean(self.intensity_list)]]])
+        return img_means
+    
+    def reset_img_means(self):
+        img_means = []
+
         return img_means
     
     def do_range_projection(self):
@@ -340,7 +350,6 @@ class LaserScan:
 
         # get angles of all points
         yaw = -np.arctan2(scan_y, scan_x)
-
         pitch = np.arcsin(scan_z / depth)
 
         # get projections in image coords
@@ -370,6 +379,8 @@ class LaserScan:
         order = np.argsort(depth)[::-1]
         depth = depth[order]
         indices = indices[order]
+        print(f"indices: {indices}")
+        
         points = self.points[order]
         remission = self.remissions[order]
         proj_y = proj_y[order]

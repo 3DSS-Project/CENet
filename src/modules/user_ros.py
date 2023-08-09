@@ -15,6 +15,8 @@ from sensor_msgs.msg import PointField, PointCloud2
 from sensor_msgs import point_cloud2
 import sensor_msgs.point_cloud2 as pcl2
 import numpy as np
+from sensor_msgs.msg import Image
+import cv2
 
 class User():
     def __init__(self, ARCH, DATA, datadir, logdir, modeldir,split):
@@ -30,7 +32,12 @@ class User():
         rospy.init_node('pointcloud_inference', anonymous=True)
         self.header = Header()
         self.header.stamp = rospy.Time.now()
-        self.header.frame_id = 'base_link'
+        self.header.frame_id = 'os_sensor'
+        self.fields_xyz =[PointField('x',  0, 7, 1), # PointField.FLOAT32 = 7
+                          PointField('y',  4, 7, 1),
+                          PointField('z',  8, 7, 1),
+                          PointField('intensity',  12, 7, 1)]
+        
         self.fields =[PointField('x',  0, 7, 1), # PointField.FLOAT32 = 7
                  PointField('y',  4, 7, 1),
                  PointField('z',  8, 7, 1),
@@ -46,7 +53,12 @@ class User():
             ('t', np.uint32),
             ('ring', np.uint8)
         ])
-
+        
+        self.sig_img = None
+        self.range_img = None
+        self.range_img_set = False
+        self.sig_img_set = False
+        
         # get the data
         from dataset.kitti.parser_ros import Parser
         self.parser = Parser(root=self.datadir,
@@ -127,24 +139,89 @@ class User():
             torch.cuda.empty_cache()
         
         ouster_points = '/ouster/points'
-        rospy.Subscriber(ouster_points, PointCloud2, self.infer)
+        ouster_rv = '/ouster/range_image'
+        ouster_sig = '/ouster/signal_image'
+
+        rospy.Subscriber(ouster_points, PointCloud2, self.infer_pc)
+        rospy.Subscriber(ouster_rv, Image, self.infer_rv)
+        rospy.Subscriber(ouster_sig, Image, self.set_sig)
 
         # Create a publisher for the output PointCloud2 topic
         self.pub = rospy.Publisher('/semantic_points', PointCloud2, queue_size=10)
 
         rospy.spin()
 
-    def infer(self, data):
-        #rospy.loginfo('Received a PointCloud2 message')
+    def set_sig(self, data):
+        rospy.loginfo('Received a signal Image message')
+        self.header.stamp = data.header.stamp
+
+        to_orig_fn=self.parser.to_original
+        cnn = []
+        knn = []
+        
+        # Convert the byte data to a numpy array
+        dtype = np.dtype(np.int16)  # as it's mono16
+        dtype = dtype.newbyteorder('>')  # ROS Image messages use big endian
+        cv_image = np.frombuffer(data.data, dtype=dtype).reshape(data.height, data.width)
+
+        if cv_image.dtype.byteorder not in ('=', '|'):
+            cv_image = cv_image.newbyteorder('=').astype(cv_image.dtype)
+
+        self.sig_img = cv_image
+        self.sig_img = self.sig_img.byteswap().newbyteorder()       
+        self.sig_img_set = True
+
+        #if (self.range_img_set and self.sig_img_set):
+        #    self.infer_subset(to_orig_fn, cnn=cnn, knn=knn)
+        #    self.range_img_set = False
+        #    self.sig_img_set = False
+        
+        return
+    
+    def infer_rv(self, data):
+        rospy.loginfo('Received a Range Image message')
         self.header.stamp = data.header.stamp
         
         cnn = []
         knn = []
+        
+        to_orig_fn=self.parser.to_original
+
+        # Convert the byte data to a numpy array
+        dtype = np.dtype(np.uint16)  # as it's mono16
+        dtype = dtype.newbyteorder('>')  # ROS Image messages use big endian
+        cv_image = np.frombuffer(data.data, dtype=dtype).reshape(data.height, data.width)
+
+        if cv_image.dtype.byteorder not in ('=', '|'):
+            cv_image = cv_image.newbyteorder('=').astype(cv_image.dtype)
+        
+        self.range_img = cv_image
+        self.range_img = self.range_img.byteswap().newbyteorder()
+        self.range_img_set = True
+
+        #if (self.range_img_set and self.sig_img_set):
+        #    self.infer_subset(to_orig_fn, cnn=cnn, knn=knn)
+        #    self.range_img_set = False
+        #    self.sig_img_set = False
+
+        #print("Mean CNN inference time:{}\t std:{}".format(np.mean(cnn), np.std(cnn)))
+        #print("Mean KNN inference time:{}\t std:{}".format(np.mean(knn), np.std(knn)))
+        #print("Total Frames:{}".format(len(cnn)))
+        #print("Finished Infering")
+        return
+    
+    def infer_pc(self, data):
+        rospy.loginfo('Received a PointCloud2 message')
+        self.header.stamp = data.header.stamp
+        
+        cnn = []
+        knn = []
+        
         loader=self.parser.get_test_set(data)
         to_orig_fn=self.parser.to_original
 
         self.infer_subset(loader, to_orig_fn, cnn=cnn, knn=knn)
-    
+        
         #print("Mean CNN inference time:{}\t std:{}".format(np.mean(cnn), np.std(cnn)))
         #print("Mean KNN inference time:{}\t std:{}".format(np.mean(knn), np.std(knn)))
         #print("Total Frames:{}".format(len(cnn)))
@@ -152,7 +229,7 @@ class User():
 
         return
 
-    def publish(self, labels):
+    def publish_pc(self, labels):
         #self.header.stamp = rospy.Time.now() #timestamp
         semantic_points = self.parser.get_scan().flatten()
         semantic_points['intensity'] = labels
@@ -160,7 +237,43 @@ class User():
         labeled_cloud.is_dense = True  # Added line
         self.pub.publish(labeled_cloud)
 
-    def infer_subset(self, loader, to_orig_fn,cnn,knn):
+    def publish_pc_xyz(self, points, labels):
+        #self.header.stamp = rospy.Time.now() #timestamp
+        points = points[:]
+        points[:,3] = labels
+        #print(points)
+        labeled_cloud = pcl2.create_cloud(self.header, self.fields_xyz, points)
+        labeled_cloud.is_dense = True  # Added line
+        self.pub.publish(labeled_cloud)
+
+    def publish_rv(self, rv, labels):
+        #self.header.stamp = rospy.Time.now() #timestamp
+        labeled_cloud = pcl2.create_cloud(self.header, self.fields, semantic_points)
+        labeled_cloud.is_dense = True  # Added line
+        self.pub.publish(labeled_cloud)
+    
+    def range_image_to_pointcloud(self, range_image, vertical_fov=(16.5, -16.5), horizontal_fov=(0, 360)):
+        # Assuming range_image is a 2D numpy array
+        height, width = range_image.shape
+
+        # Create an array of angles (size same as range_image)
+        theta = np.linspace(horizontal_fov[0], horizontal_fov[1], width)  # azimuth
+        phi = np.linspace(vertical_fov[0], vertical_fov[1], height)  # elevation
+
+        # Convert these to a grid of theta and phi values
+        theta, phi = np.meshgrid(np.radians(theta), np.radians(phi))
+
+        # Convert to Cartesian coordinates
+        div = 250
+        x = range_image * np.cos(phi) * np.sin(theta-np.pi/2) / div
+        y = range_image * np.cos(phi) * np.cos(theta-np.pi/2) / div
+        z = range_image * np.tan(phi) / div
+
+        xyz = np.stack((x, y, z), axis=-1)#.reshape(-1,3)
+
+        return xyz
+   
+    def infer_subset(self,loader,to_orig_fn,cnn,knn):
         # switch to evaluate mode
         #self.model.eval()
         #total_time=0
@@ -171,17 +284,70 @@ class User():
         #    torch.cuda.empty_cache()
         
         with torch.no_grad():
-            #for i, (proj_in, proj_mask, _, _, path_seq, path_name, p_x, p_y, proj_range, unproj_range, _, _, _, _, npoints) in enumerate(loader):
-            proj_in, proj_mask, _, _, p_x, p_y, proj_range, unproj_range, _, _, _, _, npoints = loader
-            # first cut to rela size (batch size one allows it)
+            #'''
+            proj_in, proj_mask, _, _, p_x, p_y, proj_range, unproj_range, proj_xyz, unproj_xyz, proj_remission, unproj_remissions, npoints = loader
+            #p_x = p_x[:npoints]
+            #p_y = p_y[:npoints]
 
-            p_x = p_x[:npoints]
-            p_y = p_y[:npoints]
-            proj_range = proj_range[:npoints]
-            unproj_range = unproj_range[:npoints]
-            # path_seq = path_seq[0]
-            # path_name = path_name[0]
-        
+            #print(f"p_y: {p_y}, p_x: {p_x}")
+
+            #proj_range = proj_range[:npoints]
+            #print(f"proj_range1: {proj_range}")
+            #unproj_range = unproj_range[:npoints]
+            
+            self.range_img = np.array(self.range_img, dtype=np.float32)
+            self.sig_img = np.array(self.sig_img, dtype=np.float32)
+            proj_range = torch.from_numpy(self.range_img).clone()
+            #print(f"proj_range1: {proj_range}")
+
+            unproj_range_np = self.range_img[:,:].flatten()
+            unproj_range = torch.from_numpy(unproj_range_np).clone()
+
+            indices = np.arange(unproj_range_np.shape[0])
+            order = np.argsort(unproj_range_np)[::-1]
+            indices = indices[order]
+            print(indices)
+
+            proj_idx = np.full((64, 1024), -1, dtype=np.int32)
+            proj_mask = np.zeros((64, 1024), dtype=np.int32)
+            proj_idx[:, :] = indices.reshape(64, 1024)
+            proj_mask = (proj_idx > 0).astype(np.int32)
+            proj_mask = torch.from_numpy(proj_mask)
+
+            height, width = self.range_img.shape
+            p_y, p_x = np.meshgrid(np.arange(height), np.arange(width), indexing='ij')
+            p_x = torch.from_numpy(p_x.flatten()).clone()
+            p_y = torch.from_numpy(p_y.flatten()).clone()
+
+            unproj_xyz = self.range_image_to_pointcloud(self.range_img)
+            proj_xyz_np = np.full((64, 1024, 3), -1, dtype=np.float32)
+            proj_xyz_np[:,:] = unproj_xyz[:]
+            
+            proj_remission = torch.from_numpy(self.sig_img).clone()
+            proj_xyz = torch.from_numpy(proj_xyz_np).clone()
+
+            proj_in = torch.cat([proj_range.unsqueeze(0).clone(),
+                      proj_xyz.clone().permute(2, 0, 1),
+                      proj_remission.unsqueeze(0).clone()])
+
+            img_means = torch.tensor([[[ np.mean(unproj_range_np)]],
+                                  [[ np.mean(proj_xyz_np[:,:,0])]],
+                                  [[np.mean(proj_xyz_np[:,:,1])]],
+                                  [[ np.mean(proj_xyz_np[:,:,2])]],
+                                  [[ np.mean(self.sig_img[:,:])]]])
+            
+            img_stds = torch.tensor([[[ np.std(unproj_range_np)]],
+                                  [[ np.std(proj_xyz_np[:,:,0])]],
+                                  [[np.std(proj_xyz_np[:,:,1])]],
+                                  [[ np.std(proj_xyz_np[:,:,2])]],
+                                  [[ np.std(self.sig_img[:,:])]]])
+            
+            proj_in = (proj_in - img_means) / img_stds
+            proj_in = proj_in * proj_mask.float()
+
+            cv2.imshow("Model image", self.range_img)
+            key = cv2.waitKey(100) & 0xFF
+
             if self.gpu:
                 proj_in = proj_in.cuda()
                 p_x = p_x.cuda()
@@ -197,8 +363,9 @@ class User():
             else:
                 with torch.cuda.amp.autocast(enabled=True):
                     proj_output = self.model(proj_in)
-
+                    
             proj_argmax = proj_output[0].argmax(dim=0)
+
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             res = time.time() - end
@@ -226,7 +393,6 @@ class User():
     #                     potential_range = proj_unfold_range[0, :, py, px]
     #                     min_arg = np.argmin(abs(potential_range - unproj_range[jj]))
     #                     unproj_argmax = potential_label[min_arg]
-
             else:
                 # put in original pointcloud using indexes
                 unproj_argmax = proj_argmax[p_y, p_x]
@@ -248,5 +414,6 @@ class User():
             # map to original label
             pred_np = to_orig_fn(pred_np)
             #print(f"predictions numpy:\n {pred_np}")
-
-            self.publish(pred_np)
+            
+            #self.publish_pc_xyz(unproj_xyz, pred_np)
+            self.publish_pc(pred_np)
