@@ -33,6 +33,7 @@ class User():
         self.header = Header()
         self.header.stamp = rospy.Time.now()
         self.header.frame_id = 'os_sensor'
+
         self.fields_xyz =[PointField('x',  0, 7, 1), # PointField.FLOAT32 = 7
                           PointField('y',  4, 7, 1),
                           PointField('z',  8, 7, 1),
@@ -53,7 +54,10 @@ class User():
             ('t', np.uint32),
             ('ring', np.uint8)
         ])
-        
+
+        self.range_image_header = None
+        self.signal_image_header = None
+
         self.sig_img = None
         self.range_img = None
         self.range_img_set = False
@@ -143,21 +147,26 @@ class User():
         ouster_sig = '/ouster/signal_image'
 
         #rospy.Subscriber(ouster_points, PointCloud2, self.infer_pc)
-        rospy.Subscriber(ouster_rv, Image, self.infer_rv)
-        rospy.Subscriber(ouster_sig, Image, self.set_sig)
+        rospy.Subscriber(ouster_rv, Image, self.set_range_image)
+        rospy.Subscriber(ouster_sig, Image, self.set_signal_image)
 
         # Create a publisher for the output PointCloud2 topic
         self.pub = rospy.Publisher('/semantic_points', PointCloud2, queue_size=10)
 
         rospy.spin()
 
-    def set_sig(self, data):
-        rospy.loginfo('Received a signal Image message')
-        self.header.stamp = data.header.stamp
+    def publish_pc_xyz(self, points, labels):
+        s_points = np.zeros((64*1024, 4), dtype=np.float32)  # [m, 3]: x, y, z
+        s_points[:,0:3] = points.reshape(64*1024, 3)
+        s_points[:,3] = labels
+        labeled_cloud = pcl2.create_cloud(self.header, self.fields_xyz, s_points)
+        labeled_cloud.is_dense = True  # Added line
+        self.pub.publish(labeled_cloud)
 
-        to_orig_fn=self.parser.to_original
-        cnn = []
-        knn = []
+    def set_signal_image(self, data):
+        rospy.loginfo('Received a signal Image message')
+        self.signal_image_header_seq = data.header.seq
+        self.signal_image_header_stamp = data.header.stamp
         
         # Convert the byte data to a numpy array
         dtype = np.dtype(np.int16)  # as it's mono16
@@ -168,17 +177,14 @@ class User():
             cv_image = cv_image.newbyteorder('=').astype(cv_image.dtype)
 
         self.sig_img = cv_image
-        self.sig_img = self.sig_img.byteswap().newbyteorder()       
-        return
+        self.sig_img = self.sig_img.byteswap().newbyteorder() 
+
+        self.infer_rv()
     
-    def infer_rv(self, data):
+    def set_range_image(self, data):
         rospy.loginfo('Received a Range Image message')
-        self.header.stamp = data.header.stamp
-        
-        cnn = []
-        knn = []
-        
-        to_orig_fn=self.parser.to_original
+        self.range_image_header_seq = data.header.seq
+        self.range_image_header_stamp = data.header.stamp
 
         # Convert the byte data to a numpy array
         dtype = np.dtype(np.uint16)  # as it's mono16
@@ -190,25 +196,20 @@ class User():
         
         self.range_img = cv_image
         self.range_img = self.range_img.byteswap().newbyteorder()
-        self.infer_subset(to_orig_fn, cnn=cnn, knn=knn)
-        return
 
-    def publish_pc(self, labels):
-        #self.header.stamp = rospy.Time.now() #timestamp
-        semantic_points = self.parser.get_scan().flatten()
-        semantic_points['intensity'] = labels
-        labeled_cloud = pcl2.create_cloud(self.header, self.fields, semantic_points)
-        labeled_cloud.is_dense = True  # Added line
-        self.pub.publish(labeled_cloud)
+        self.infer_rv()
 
-    def publish_pc_xyz(self, points, labels):
-        s_points = np.zeros((64*1024, 4), dtype=np.float32)  # [m, 3]: x, y, z
-        s_points[:,0:3] = points.reshape(64*1024, 3)
-        s_points[:,3] = labels
-        labeled_cloud = pcl2.create_cloud(self.header, self.fields_xyz, s_points)
-        labeled_cloud.is_dense = True  # Added line
-        self.pub.publish(labeled_cloud)
+    def infer_rv(self):
+        if (self.range_image_header == self.signal_image_header):
+            cnn = []
+            knn = []        
+            to_orig_fn=self.parser.to_original
+            self.header.stamp = self.range_image_header_stamp # Make pointcloud stamp same as range image
 
+            self.infer_subset(to_orig_fn, cnn=cnn, knn=knn)
+        else:
+            return
+        
     def range_image_to_pointcloud(self, range_image, vertical_fov=(16.5, -16.5), horizontal_fov=(0, 360)):
         # Assuming range_image is a 2D numpy array
         height, width = range_image.shape

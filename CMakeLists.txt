@@ -13,6 +13,7 @@ catkin_python_setup()
 catkin_install_python(PROGRAMS scripts/infer.py
                       scripts/infer_ros.py
                       scripts/view_range_image.py
+                      scripts/msg_sync.py
                       DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 install(DIRECTORY launch DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
