@@ -18,6 +18,8 @@ import numpy as np
 from sensor_msgs.msg import Image
 import cv2
 
+import ros_numpy
+
 class User():
     def __init__(self, ARCH, DATA, datadir, logdir, modeldir,split):
         # parameters
@@ -54,15 +56,33 @@ class User():
             ('t', np.uint32),
             ('ring', np.uint8)
         ])
+        
+        self.point_cloud_header_seq = None
+        self.point_cloud_header_stamp = None
 
-        self.range_image_header = None
-        self.signal_image_header = None
+        self.range_img_header_seq = None
+        self.range_img_header_stamp = None
+        
+        self.signal_img_header_seq = None
+        self.signal_img_header_stamp = None
 
         self.sig_img = None
         self.range_img = None
-        self.range_img_set = False
-        self.sig_img_set = False
-        
+
+        self.points = None
+        self.remissions = None
+        self.point_cloud = None
+
+        self.points_dict = {}
+        self.remissions_dict = {}
+        self.point_cloud_dict = {}
+        self.range_img_dict = {}
+        self.signal_img_dict = {}
+
+        self.aligned_header_stamp_list = []
+        self.aligned_header_stamp = None
+        self.header_stamp_num = 0
+
         # get the data
         from dataset.kitti.parser_ros import Parser
         self.parser = Parser(root=self.datadir,
@@ -132,6 +152,22 @@ class User():
             self.gpu = True
             self.model.cuda()
 
+    def publish_pc_xyz(self, points, labels):
+        begin_publish = time.time()
+        s_points = np.zeros((64*1024, 4), dtype=np.float32)  # [m, 3]: x, y, z
+        s_points[:,0:3] = points.reshape(64*1024, 3)
+        s_points[:,3] = labels
+
+        #point_cloud = self.point_cloud.flatten()
+        #point_cloud['intensity'] = labels
+
+        labeled_cloud = pcl2.create_cloud(self.header, self.fields_xyz, s_points)
+        labeled_cloud.is_dense = True  # Added line
+        self.pub.publish(labeled_cloud)
+        end_publish = time.time()
+
+        print(f"publish_time: {end_publish - begin_publish}")
+
     def listener(self):
         # Subscribe to the input PointCloud2 topic
         #sc_lio_sam_global_map = '/sc_lio_sam/map_global'
@@ -142,32 +178,54 @@ class User():
         if self.gpu:
             torch.cuda.empty_cache()
         
-        ouster_points = '/ouster/points'
+        #ouster_points = '/ouster/points'
         ouster_rv = '/ouster/range_image'
         ouster_sig = '/ouster/signal_image'
 
-        #rospy.Subscriber(ouster_points, PointCloud2, self.infer_pc)
         rospy.Subscriber(ouster_rv, Image, self.set_range_image)
         rospy.Subscriber(ouster_sig, Image, self.set_signal_image)
+        #rospy.Subscriber(ouster_points, PointCloud2, self.set_points)
 
         # Create a publisher for the output PointCloud2 topic
-        self.pub = rospy.Publisher('/semantic_points', PointCloud2, queue_size=10)
+        self.pub = rospy.Publisher('/semantic_points', PointCloud2, queue_size=100)
 
         rospy.spin()
 
-    def publish_pc_xyz(self, points, labels):
-        s_points = np.zeros((64*1024, 4), dtype=np.float32)  # [m, 3]: x, y, z
-        s_points[:,0:3] = points.reshape(64*1024, 3)
-        s_points[:,3] = labels
-        labeled_cloud = pcl2.create_cloud(self.header, self.fields_xyz, s_points)
-        labeled_cloud.is_dense = True  # Added line
-        self.pub.publish(labeled_cloud)
+    def set_points(self, data):
+        #rospy.loginfo('Recieved a PointCloud2 message')
+        self.point_cloud_header_seq = data.header.seq
+        self.point_cloud_header_stamp = data.header.stamp
+        #rospy.loginfo(f'Recieved a PointCloud2 message\n     seq: {self.point_cloud_header_seq}\n   stamp: {self.point_cloud_header_stamp}')
+        
+        pc = ros_numpy.numpify(data)
+        
+        data_points2 = np.zeros(pc.shape, dtype=[('x', np.float32), ('y', np.float32), ('z', np.float32), ('intensity', np.float32), ('t', np.uint32), ('ring', np.uint8)])
+        data_points2['x'] = pc['x'].astype(np.float32)
+        data_points2['y'] = pc['y'].astype(np.float32)
+        data_points2['z'] = pc['z'].astype(np.float32)
+        data_points2['intensity'] = pc['intensity'].astype(np.float32)
+        data_points2['t'] = pc['t'].astype(np.uint32)
+        data_points2['ring'] = pc['ring'].astype(np.uint8)
+
+        point_cloud = data_points2
+        self.point_cloud_dict[f'{self.point_cloud_header_stamp}'] = point_cloud
+
+        points = np.array([data_points2['x'], data_points2['y'], data_points2['z']]).reshape(64,1024,3) # get xyz
+        self.points_dict[f'{self.point_cloud_header_stamp}'] = points
+
+        # print(f"points shape: {self.points.shape}")
+        remissions = np.array([data_points2['intensity']])   # get remission
+        self.remissions_dict[f'{self.point_cloud_header_stamp}'] = remissions
+
+        # print(f"intensity shape: {self.remissions.shape}")
+
+        #self.infer_rv()
 
     def set_signal_image(self, data):
-        rospy.loginfo('Received a signal Image message')
-        self.signal_image_header_seq = data.header.seq
-        self.signal_image_header_stamp = data.header.stamp
-        
+        self.signal_img_header_seq = data.header.seq
+        self.signal_img_header_stamp = data.header.stamp
+        #rospy.loginfo(f'Received a Signal Image message\n     seq: {self.signal_img_header_seq}\n   stamp: {self.signal_img_header_stamp}')
+
         # Convert the byte data to a numpy array
         dtype = np.dtype(np.int16)  # as it's mono16
         dtype = dtype.newbyteorder('>')  # ROS Image messages use big endian
@@ -176,15 +234,17 @@ class User():
         if cv_image.dtype.byteorder not in ('=', '|'):
             cv_image = cv_image.newbyteorder('=').astype(cv_image.dtype)
 
-        self.sig_img = cv_image
-        self.sig_img = self.sig_img.byteswap().newbyteorder() 
+        sig_img = cv_image
+        sig_img = sig_img.byteswap().newbyteorder() 
 
-        self.infer_rv()
+        self.signal_img_dict[f'{self.signal_img_header_stamp}'] = sig_img
+        
+        #self.infer_rv()
     
     def set_range_image(self, data):
-        rospy.loginfo('Received a Range Image message')
-        self.range_image_header_seq = data.header.seq
-        self.range_image_header_stamp = data.header.stamp
+        self.range_img_header_seq = data.header.seq
+        self.range_img_header_stamp = data.header.stamp
+        #rospy.loginfo(f'Received a Range Image message\n     seq: {self.range_img_header_seq}\n     stamp: {self.range_img_header_stamp}')
 
         # Convert the byte data to a numpy array
         dtype = np.dtype(np.uint16)  # as it's mono16
@@ -194,19 +254,41 @@ class User():
         if cv_image.dtype.byteorder not in ('=', '|'):
             cv_image = cv_image.newbyteorder('=').astype(cv_image.dtype)
         
-        self.range_img = cv_image
-        self.range_img = self.range_img.byteswap().newbyteorder()
+        range_img = cv_image
+        range_img = range_img.byteswap().newbyteorder()
+        
+        self.range_img_dict[f'{self.range_img_header_stamp}'] = range_img
+
+        self.aligned_header_stamp_list.append(self.range_img_header_stamp)
 
         self.infer_rv()
 
     def infer_rv(self):
-        if (self.range_image_header == self.signal_image_header):
+        self.aligned_header_stamp = self.aligned_header_stamp_list[self.header_stamp_num]
+        #print(self.aligned_header_stamp)
+        #print(self.signal_img_dict.keys())
+
+        if ((f'{self.aligned_header_stamp}' in self.signal_img_dict.keys())): # and (f'{self.aligned_header_stamp}' in self.remissions_dict.keys())):
             cnn = []
             knn = []        
             to_orig_fn=self.parser.to_original
-            self.header.stamp = self.range_image_header_stamp # Make pointcloud stamp same as range image
+
+            #self.point_cloud = self.point_cloud_dict[f'{self.aligned_header_stamp}']
+            #self.points = self.points_dict[f'{self.aligned_header_stamp}']
+            #self.remissions = self.remissions_dict[f'{self.aligned_header_stamp}']
+            self.range_img = self.range_img_dict[f'{self.aligned_header_stamp}']
+            self.sig_img = self.signal_img_dict[f'{self.aligned_header_stamp}']
 
             self.infer_subset(to_orig_fn, cnn=cnn, knn=knn)
+            
+            #del self.point_cloud_dict[f'{self.aligned_header_stamp}']
+            #del self.points_dict[f'{self.aligned_header_stamp}']
+            #del self.remissions_dict[f'{self.aligned_header_stamp}']
+            del self.range_img_dict[f'{self.aligned_header_stamp}']
+            del self.signal_img_dict[f'{self.aligned_header_stamp}']
+
+            self.header_stamp_num += 1
+            
         else:
             return
         
@@ -237,8 +319,11 @@ class User():
         #    torch.cuda.empty_cache()
         
         with torch.no_grad():
+            begin_data_process = time.time()
+
             self.range_img = np.array(self.range_img, dtype=np.float32)
             self.sig_img = np.array(self.sig_img, dtype=np.float32)
+            
             proj_range = torch.from_numpy(self.range_img).clone()
 
             unproj_range_np = self.range_img[:,:].flatten()
@@ -259,7 +344,7 @@ class User():
             p_x = torch.from_numpy(p_x.flatten()).clone()
             p_y = torch.from_numpy(p_y.flatten()).clone()
 
-            unproj_xyz = self.range_image_to_pointcloud(self.range_img)
+            unproj_xyz = self.range_image_to_pointcloud(self.range_img) # points
             proj_xyz_np = np.full((64, 1024, 3), -1, dtype=np.float32)
             proj_xyz_np[:,:] = unproj_xyz[:]
             
@@ -287,6 +372,9 @@ class User():
 
             proj_in = proj_in.float()
             
+            end_data_process = time.time()
+
+            print(f"data_process: {end_data_process - begin_data_process}")
             #cv2.imshow("Model image", proj_range.numpy())
             #key = cv2.waitKey(100) & 0xFF
 
@@ -340,5 +428,7 @@ class User():
             pred_np = to_orig_fn(pred_np)
             #print(f"predictions numpy:\n {pred_np}")
             
-            self.publish_pc_xyz(unproj_xyz, pred_np)
+            pred_np.tofile(f"/home/arpg/hunter_ws/src/ce_net_ros/src/predictions/07_17_2023/{self.aligned_header_stamp}.label")
+
+            #self.publish_pc_xyz(unproj_xyz, pred_np)
             #self.publish_pc(pred_np)

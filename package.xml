@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package>
-  <name>ce_net</name>
+  <name>ce_net_ros</name>
   <version>0.0.0</version>
   <description>
     ce_net is the ros-based package for CENet.
