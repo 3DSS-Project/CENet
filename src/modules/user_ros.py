@@ -230,8 +230,7 @@ class User():
         dtype = np.dtype(np.int16)  # as it's mono16
         dtype = dtype.newbyteorder('>')  # ROS Image messages use big endian
         cv_image = np.frombuffer(data.data, dtype=dtype).reshape(data.height, data.width)
-        self.signal_img_header_stamp_sec = data.header.stamp.sec    # seconds
-        self.signal_img_header_stamp_nsec = data.header.stamp.nsec  # nanoseconds
+
         if cv_image.dtype.byteorder not in ('=', '|'):
             cv_image = cv_image.newbyteorder('=').astype(cv_image.dtype)
 
