@@ -187,7 +187,7 @@ class User():
         #rospy.Subscriber(ouster_points, PointCloud2, self.set_points)
 
         # Create a publisher for the output PointCloud2 topic
-        self.pub = rospy.Publisher('/semantic_points', PointCloud2, queue_size=100)
+        #self.pub = rospy.Publisher('/semantic_points', PointCloud2, queue_size=100)
 
         rospy.spin()
 
@@ -222,28 +222,28 @@ class User():
         #self.infer_rv()
 
     def set_signal_image(self, data):
-        self.signal_img_header_seq = data.header.seq
-        self.signal_img_header_stamp = data.header.stamp
+        self.signal_img_header_seq = data.header.seq                # msg sequence number
+        self.signal_img_header_stamp = data.header.stamp            # msg timestamp
         #rospy.loginfo(f'Received a Signal Image message\n     seq: {self.signal_img_header_seq}\n   stamp: {self.signal_img_header_stamp}')
 
         # Convert the byte data to a numpy array
         dtype = np.dtype(np.int16)  # as it's mono16
         dtype = dtype.newbyteorder('>')  # ROS Image messages use big endian
         cv_image = np.frombuffer(data.data, dtype=dtype).reshape(data.height, data.width)
-
+        self.signal_img_header_stamp_sec = data.header.stamp.sec    # seconds
+        self.signal_img_header_stamp_nsec = data.header.stamp.nsec  # nanoseconds
         if cv_image.dtype.byteorder not in ('=', '|'):
             cv_image = cv_image.newbyteorder('=').astype(cv_image.dtype)
 
         sig_img = cv_image
         sig_img = sig_img.byteswap().newbyteorder() 
-
         self.signal_img_dict[f'{self.signal_img_header_stamp}'] = sig_img
         
         #self.infer_rv()
     
     def set_range_image(self, data):
-        self.range_img_header_seq = data.header.seq
-        self.range_img_header_stamp = data.header.stamp
+        self.range_img_header_seq = data.header.seq                 # msg sequence number
+        self.range_img_header_stamp = data.header.stamp             # msg timestamp
         #rospy.loginfo(f'Received a Range Image message\n     seq: {self.range_img_header_seq}\n     stamp: {self.range_img_header_stamp}')
 
         # Convert the byte data to a numpy array
@@ -256,37 +256,37 @@ class User():
         
         range_img = cv_image
         range_img = range_img.byteswap().newbyteorder()
-        
         self.range_img_dict[f'{self.range_img_header_stamp}'] = range_img
 
         self.aligned_header_stamp_list.append(self.range_img_header_stamp)
-
         self.infer_rv()
 
     def infer_rv(self):
         self.aligned_header_stamp = self.aligned_header_stamp_list[self.header_stamp_num]
-        #print(self.aligned_header_stamp)
-        #print(self.signal_img_dict.keys())
 
         if ((f'{self.aligned_header_stamp}' in self.signal_img_dict.keys())): # and (f'{self.aligned_header_stamp}' in self.remissions_dict.keys())):
             cnn = []
             knn = []        
             to_orig_fn=self.parser.to_original
 
+            # set data:
             #self.point_cloud = self.point_cloud_dict[f'{self.aligned_header_stamp}']
             #self.points = self.points_dict[f'{self.aligned_header_stamp}']
             #self.remissions = self.remissions_dict[f'{self.aligned_header_stamp}']
             self.range_img = self.range_img_dict[f'{self.aligned_header_stamp}']
             self.sig_img = self.signal_img_dict[f'{self.aligned_header_stamp}']
 
+            # Infer:
             self.infer_subset(to_orig_fn, cnn=cnn, knn=knn)
             
+            # delete data:
             #del self.point_cloud_dict[f'{self.aligned_header_stamp}']
             #del self.points_dict[f'{self.aligned_header_stamp}']
             #del self.remissions_dict[f'{self.aligned_header_stamp}']
             del self.range_img_dict[f'{self.aligned_header_stamp}']
             del self.signal_img_dict[f'{self.aligned_header_stamp}']
 
+            # Increment index of timestamp
             self.header_stamp_num += 1
             
         else:
@@ -428,7 +428,9 @@ class User():
             pred_np = to_orig_fn(pred_np)
             #print(f"predictions numpy:\n {pred_np}")
             
-            pred_np.tofile(f"/home/arpg/hunter_ws/src/ce_net_ros/src/predictions/07_17_2023/{self.aligned_header_stamp}.label")
+            label_filename = f"{self.aligned_header_stamp.sec}_{self.aligned_header_stamp.nsec}.label"
+            pred_np.tofile(f"/home/arpg/hunter_ws/src/ce_net_ros/src/predictions/07_17_2023/{label_filename}")
 
+            # Publish point cloud (uncomment for testing)
             #self.publish_pc_xyz(unproj_xyz, pred_np)
             #self.publish_pc(pred_np)
