@@ -8,14 +8,14 @@ import yaml
 from shutil import copyfile
 import os
 import shutil
-from modules.user import User
+from modules.user_ros import User
 
 if __name__ == '__main__':
     splits = ["train", "valid", "test"]
 
-    model_dir = '/home/donceykong/hunter_ws/src/CENet/dataset/final_result/1024+valid5'
-    log_dir = '/home/donceykong/hunter_ws/src/CENet/predictions'
-    dataset_dir = '/home/donceykong/hunter_ws/src/hunter_robot/hunter_robot_data/bin/cu_campus'
+    model_dir = '/home/arpg/hunter_ws/src/ce_net_ros/src/dataset/final_result/1024+valid5'
+    log_dir = '/home/arpg/hunter_ws/src/ce_net_ros/src/predictions'
+    dataset_dir = '/home/arpg/hunter_ws/src/hunter_robot/hunter_robot_data/bin/cu_campus'
     split = '13'
 
     # print summary of what we will do
@@ -46,6 +46,7 @@ if __name__ == '__main__':
         quit()
 
     # create log folder
+    '''
     try:
         if os.path.isdir(log_dir):
             shutil.rmtree(log_dir)
@@ -60,7 +61,7 @@ if __name__ == '__main__':
         print(e)
         print("Error creating log directory. Check permissions!")
         raise
-
+    '''
     # does model folder exist?
     if os.path.isdir(model_dir):
         print("model folder exists! Using model from %s" % (model_dir))
@@ -70,4 +71,6 @@ if __name__ == '__main__':
 
     # create user and infer dataset
     user = User(ARCH, DATA, dataset_dir, log_dir, model_dir, split)
-    user.infer()
+    user.listener()
+    
+    #user.infer()

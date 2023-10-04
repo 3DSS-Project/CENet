@@ -2,11 +2,19 @@
 # This file is covered by the LICENSE file in the root of this project.
 import time
 
+import rospy
+from sensor_msgs.msg import PointCloud2
+from sensor_msgs import point_cloud2
+import numpy as np
+import ros_numpy
+import struct
+
 import numpy as np
 import math
 import random
 from scipy.spatial.transform import Rotation as R
 #import cv2
+import torch
 
 class LaserScan:
     """Class that contains LaserScan with x,y,z,r"""
@@ -28,6 +36,8 @@ class LaserScan:
         self.scan_z_list = []
         self.intensity_list = []
         self.depth_list = []
+
+        self.scan = None
 
         self.reset()
 
@@ -93,6 +103,30 @@ class LaserScan:
         points = scan[:, 0:3]  # get xyz
         remissions = scan[:, 3]  # get remission
 
+        if self.drop_points is not False:
+            self.points_to_drop = np.random.randint(0, len(points)-1,int(len(points)*self.drop_points))
+            points = np.delete(points,self.points_to_drop,axis=0)
+            remissions = np.delete(remissions,self.points_to_drop)
+
+        self.set_points(points, remissions)
+    
+    def get_scan(self, data):
+        rospy.loginfo('Converting a PointCloud2 message')
+        pc = ros_numpy.numpify(data)
+        
+        data_points2 = np.zeros(pc.shape, dtype=[('x', np.float32), ('y', np.float32), ('z', np.float32), ('intensity', np.float32), ('t', np.uint32), ('ring', np.uint8)])
+        data_points2['x'] = pc['x'].astype(np.float32)
+        data_points2['y'] = pc['y'].astype(np.float32)
+        data_points2['z'] = pc['z'].astype(np.float32)
+        data_points2['intensity'] = pc['intensity'].astype(np.float32)
+        data_points2['t'] = pc['t'].astype(np.uint32)
+        data_points2['ring'] = pc['ring'].astype(np.uint8)
+        
+        self.scan = data_points2.flatten()
+
+        points = np.array([data_points2['x'].flatten(), data_points2['y'].flatten(), data_points2['z'].flatten()]).T        # get xyz
+        remissions = data_points2['intensity'].flatten()    # get remission
+    
         if self.drop_points is not False:
             self.points_to_drop = np.random.randint(0, len(points)-1,int(len(points)*self.drop_points))
             points = np.delete(points,self.points_to_drop,axis=0)
@@ -246,6 +280,22 @@ class LaserScan:
       self.proj_idx[proj_y, proj_x] = indices
       self.proj_mask = (self.proj_idx > 0).astype(np.float32)
     
+    def get_img_stds(self):
+        img_stds = torch.tensor([[[ np.std(self.depth_list)]],
+                                 [[ np.std(self.scan_x_list)]],
+                                 [[ np.std(self.scan_y_list)]],
+                                 [[ np.std(self.scan_z_list)]],
+                                 [[ np.std(self.intensity_list)]]])
+        return img_stds
+    
+    def get_img_means(self):
+        img_means = torch.tensor([[[ np.mean(self.depth_list)]],
+                                  [[ np.mean(self.scan_x_list)]],
+                                  [[ np.mean(self.scan_y_list)]],
+                                  [[ np.mean(self.scan_z_list)]],
+                                  [[ np.mean(self.intensity_list)]]])
+        return img_means
+    
     def do_range_projection(self):
         """ Project a pointcloud into a spherical projection image.projection.
             Function takes no arguments because it can be also called externally
@@ -266,12 +316,12 @@ class LaserScan:
         scan_z = self.points[:, 2]
         intensity = self.remissions
 
-        '''
         self.depth_list.append(depth)
         self.scan_x_list.append(scan_x)
         self.scan_y_list.append(scan_y)
         self.scan_z_list.append(scan_z)
         self.intensity_list.append(intensity)
+        '''
         print(f"\nx_mean: {np.mean(self.scan_x_list)}, y_mean: {np.mean(self.scan_y_list)}, z_mean: {np.mean(self.scan_z_list)}, int_mean: {np.mean(self.intensity_list)}, depth_mean: {np.mean(self.depth_list)}")
         print(f"x_std: {np.std(self.scan_x_list)}, y_std: {np.std(self.scan_y_list)}, z_std: {np.std(self.scan_z_list)}, int_std: {np.std(self.intensity_list)}, depth_std: {np.std(self.depth_list)}\n")
         '''
@@ -442,9 +492,6 @@ class SemLaserScan(LaserScan):
     def set_label(self, label):
         """ Set points for label not from file but from np
         """
-        # check label makes sense
-        print(label[0])
-
         if not isinstance(label, np.ndarray):
             raise TypeError("Label should be numpy array")
 
