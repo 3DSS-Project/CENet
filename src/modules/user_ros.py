@@ -310,6 +310,6 @@ class User():
 
             label_filename = f"{self.header.stamp.secs}_{self.header.stamp.nsecs}.label"
 
-            pred_np.tofile(f"{self.cu_osm_path}/bin_data/{label_filename}")
+            pred_np.tofile(f"{self.cu_osm_path}/data/bin/{label_filename}")
             
             #self.publish(pred_np)
